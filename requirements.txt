@@ -5,5 +5,3 @@ fastapi
 uvicorn
 keras
 pydantic
-python-multipart
-aiofiles
