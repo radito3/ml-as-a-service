@@ -22,3 +22,8 @@
 ## K8s details
 
 If running on a k8s cluster, it's recommended to use a _StatefulSet_ 
+
+## Implementation details 
+
+The server starts asynchronous jobs for model training so it can be stateles.
+If it was only one model per server instance, it would not conform to REST.
