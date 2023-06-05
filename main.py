@@ -1,7 +1,7 @@
 import model as nn
 import datasets as ds
 import numpy as np
-from fastapi import FastAPI, HTTPException, status, UploadFile
+from fastapi import FastAPI, HTTPException, status, UploadFile, Response
 from pydantic import BaseModel
 import json
 import asyncio
@@ -15,12 +15,6 @@ datasets = {"iris": ds.get_iris_dataset,
             "random-sample": ds.generate_random_sample}
 models_cache = {}
 jobs = {}
-# POST /datasets/upload -> "dataset ID"
-# GET /datasets -> ["iris", "random-sample"]
-# POST /models -> "model ID"
-# GET /models/{id} -> {layers, neurons, state:[ready, training, trained]}
-# POST /models/{id}/fit {dataset: <name>} -> 202 Accepted, 404
-# POST /models/{id}/predict -> 200, 404
 
 
 class DatasetName(BaseModel):
@@ -35,6 +29,7 @@ async def train_model(model: nn.NeuralNetwork, ds_name: DatasetName):
     x_train, x_test, y_train, y_test = model.split_data(x, y)
     x_train, _, y_train, _ = model.prepare_data(x_train, x_test, y_train, y_test, num_classes)
     model.fit_model(x_train, y_train)
+    return True
 
 
 @app.get("/")
@@ -53,7 +48,7 @@ async def upload_dataset(file: UploadFile):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be a csv")
 
     try:
-        async with aiofiles.open(f'datasets/{file.filename}', mode='wb', buffering=4096) as f:
+        async with aiofiles.open(f'/app/data/datasets/{file.filename}', mode='wb', buffering=4096) as f:
             while buff := await file.read(4096):
                 await f.write(str(buff))
     except Exception as e:
@@ -68,7 +63,10 @@ async def upload_dataset(file: UploadFile):
 async def create_model(num_classes: int):
     m = nn.NeuralNetwork(num_classes)
     model_id = str(uuid.uuid4())
-    models_cache[model_id] = {m.num_layers, m.num_neurons_per_layer, "initial", m}
+    models_cache[model_id] = {"layers": m.num_layers,
+                              "neurons": m.num_neurons_per_layer,
+                              "state": "initial",
+                              "obj": m}
     return {"model_id": model_id}
 
 
@@ -76,17 +74,57 @@ async def create_model(num_classes: int):
 async def get_model(model_id: str):
     if model_id not in models_cache:
         raise HTTPException(status_code=404, detail=f'Model {model_id} not found')
+
     m = models_cache[model_id]
-    # TODO: serialize model as json
-    return m
+    return {"layers": m.layers, "neurons": m.neurons, "state": m.state}
 
 
 @app.post("/models/{model_id}/fit", status_code=status.HTTP_202_ACCEPTED)
-async def fit_model(model_id: str, dataset: DatasetName):
+async def fit_model(model_id: str, ds_name: DatasetName):
     if model_id not in models_cache:
         raise HTTPException(status_code=404, detail=f'Model {model_id} not found')
+
+    if ds_name not in datasets:
+        raise HTTPException(status_code=400, detail=f'Invalid dataset: {ds_name}')
+
+    if model_id in jobs:
+        raise HTTPException(status_code=400, detail=f'Model {ds_name} training already started')
+
     m = models_cache[model_id]
-    task = asyncio.create_task(train_model(m, dataset))
+    task = asyncio.create_task(train_model(m, ds_name))
+    jobs[model_id] = task
     return {"status": "started training"}
-    # TODO: generate job ID
-    # json.dumps(nparray.tolist())
+
+
+@app.post("/models/{model_id}/predict")
+async def model_predict(model_id: str, ds_name: DatasetName, response: Response):
+    if model_id not in models_cache:
+        raise HTTPException(status_code=404, detail=f'Model {model_id} not found')
+
+    if ds_name not in datasets:
+        raise HTTPException(status_code=400, detail=f'Invalid dataset: {ds_name}')
+
+    if model_id not in jobs:
+        raise HTTPException(status_code=400, detail=f'Model {ds_name} not trained')
+
+    job = jobs[model_id]
+    if not job.done():
+        response.status_code = 204
+        return {"status": "training"}
+
+    try:
+        _ = job.result()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Model {model_id} training error: {e}')
+
+    m = models_cache[model_id]
+    model = m.obj
+    ds = datasets[ds_name]()
+    x = ds.x
+    y = ds.y
+    num_classes = len(np.unique(y))
+    x_train, x_test, y_train, y_test = model.split_data(x, y)
+    _, x_test, _, _ = model.prepare_data(x_train, x_test, y_train, y_test, num_classes)
+
+    result = model.predict(x_test)
+    return json.dumps(result.tolist())
