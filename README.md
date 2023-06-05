@@ -17,4 +17,8 @@
    1. `docker login <registry address> --username <user> --password-stdin`
    2. `docker tag <name>:<tag> <registry>/<name>:<tag>`
    3. `docker push <registry>/<name>:<tag>`
-3. If you're running locally: `docker run <name>:<tag> -p 8000:8000`
+3. If you're running locally: `docker run -p 8000:8000 <name>:<tag>`
+
+## K8s details
+
+If running on a k8s cluster, it's recommended to use a _StatefulSet_ 
