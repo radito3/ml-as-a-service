@@ -6,6 +6,9 @@ from keras import regularizers
 
 
 class NeuralNetwork:
+    num_layers = 4
+    num_neurons_per_layer = 8
+
     # num_classes = len(np.unique(y))
     def __init__(self, num_classes):
         model = tf.keras.models.Sequential([

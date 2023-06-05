@@ -5,6 +5,8 @@ from fastapi import FastAPI, HTTPException, status, UploadFile
 from pydantic import BaseModel
 import json
 import asyncio
+import uuid
+import aiofiles
 
 app = FastAPI()
 
@@ -13,9 +15,8 @@ datasets = {"iris": ds.get_iris_dataset,
             "random-sample": ds.generate_random_sample}
 models_cache = {}
 jobs = {}
-# POST /datasets/upload application/octet-stream -> "dataset ID"
+# POST /datasets/upload -> "dataset ID"
 # GET /datasets -> ["iris", "random-sample"]
-# GET /datasets/{name}
 # POST /models -> "model ID"
 # GET /models/{id} -> {layers, neurons, state:[ready, training, trained]}
 # POST /models/{id}/fit {dataset: <name>} -> 202 Accepted, 404
@@ -48,19 +49,27 @@ async def get_datasets():
 
 @app.post("/datasets/upload")
 async def upload_dataset(file: UploadFile):
-    # TODO: persist to volume and add extraction function to datasets dict
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be a csv")
+
     try:
-        print("test")
+        async with aiofiles.open(f'datasets/{file.filename}', mode='wb', buffering=4096) as f:
+            while buff := await file.read(4096):
+                await f.write(str(buff))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to persist dataset")
-    return {}
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'failed to persist dataset: {e}')
+    finally:
+        await file.close()
+
+    return {"status": "uploaded"}
 
 
 @app.post("/models", status_code=status.HTTP_201_CREATED)
-async def create_model():
-    m = nn.NeuralNetwork(2)
-    models_cache["alabala"] = {1, 2, "initial", m}
-    return {"model_id": "alabala"}
+async def create_model(num_classes: int):
+    m = nn.NeuralNetwork(num_classes)
+    model_id = str(uuid.uuid4())
+    models_cache[model_id] = {m.num_layers, m.num_neurons_per_layer, "initial", m}
+    return {"model_id": model_id}
 
 
 @app.get("/models/{model_id}")
@@ -78,6 +87,6 @@ async def fit_model(model_id: str, dataset: DatasetName):
         raise HTTPException(status_code=404, detail=f'Model {model_id} not found')
     m = models_cache[model_id]
     task = asyncio.create_task(train_model(m, dataset))
-    return {}
+    return {"status": "started training"}
     # TODO: generate job ID
     # json.dumps(nparray.tolist())
